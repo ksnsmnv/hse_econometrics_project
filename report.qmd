@@ -1,0 +1,976 @@
+---
+title: "Women in Parliament and Health Expenditures"
+subtitle: |
+  Final Paper for Econometrics Fall Semester 2025
+thanks: "GitHub Repository: \\url{https://github.com/ksnsmnv/hse_econometrics_project}"
+author: 
+- Altysheva Zhanna
+- Emshanova Evgeniia
+- Obukhova Ekaterina
+- Semenova Kseniia
+- Fradkina Tatiana
+date: today
+date-format: long
+bibliography: bibliography.bib
+csl: https://raw.githubusercontent.com/citation-style-language/styles/master/apa.csl
+format:
+  pdf:
+    toc: true
+    toc-depth: 1
+    geometry: 
+      - top=20mm
+      - left=30mm
+---
+
+```{r}
+#| include: false
+#| results: false
+#| message: false
+#| warning: false
+# Install all necessary packages =====================================
+
+p_needed <- c(
+  "tidyverse", # shortcut for ggplot2, %>%
+  "modelsummary", # tables for descriptive stats
+  "fixest", # model estimation
+  "xtsum", # summary statistics for panel data
+  "gplots", # graphs for a panel data
+  "plm", # set of instruments to work with panel data
+  "corrplot",
+  "marginaleffects",
+  "car",
+  "sjPlot",
+  "sjmisc",
+  "interactions",
+  "scales",
+  "showtext",
+  "extrafont",
+  "viridis",
+  "kableExtra"
+)
+lapply(
+  p_needed[!(p_needed %in% rownames(installed.packages()))],
+  install.packages
+)
+lapply(p_needed, library, character.only = TRUE)
+ggplot2::theme_set(ggplot2::theme_minimal())
+
+options(repr.plot.width = 10, repr.plot.height = 8)
+
+font_add_google(
+  "Roboto Condensed", ## name of Google font
+  "Roboto Condensed"
+) ## name that will be used in R
+theme_set(theme_minimal(base_size = 18, base_family = "Roboto Condensed"))
+theme_update(
+  plot.title = element_text(face = "bold"),
+  plot.title.position = "plot",
+  legend.position = "bottom",
+  panel.grid.minor = element_blank()
+)
+formals(scale_alpha_manual)$values <- c(0.5, 1)
+showtext::showtext_auto()
+```
+
+```{r}
+#| include: false
+# 1. Share of health expenditures (% of general government expenditure)
+df_raw_exp <- read.csv(
+  "https://data360files.worldbank.org/data360-data/data/WB_WDI/WB_WDI_SH_XPD_GHED_GE_ZS.csv"
+) %>%
+  select(
+    health_exp = OBS_VALUE,
+    year = TIME_PERIOD,
+    country = REF_AREA,
+    area = REF_AREA_LABEL
+  ) %>%
+  group_by(country) %>%
+  arrange(country, year) %>%
+  mutate(
+    health_exp_lead1 = dplyr::lead(x = health_exp, n = 1), # Lag 1 year
+    health_exp_lead2 = dplyr::lead(health_exp, n = 2) # Lag 2 years
+  ) %>%
+  ungroup()
+
+# 2. Share of women in parliaments
+df_raw_parl <- read.csv(
+  "https://data360files.worldbank.org/data360-data/data/WB_WDI/WB_WDI_SG_GEN_PARL_ZS.csv"
+) %>%
+  select(
+    women_prob = OBS_VALUE,
+    year = TIME_PERIOD,
+    country = REF_AREA,
+    area = REF_AREA_LABEL
+  )
+# 3. Democracy Index
+df_raw_polit <- read.csv(
+  "https://data360files.worldbank.org/data360-data/data/POLITY5_PRC/POLITY5_PRC_DEMOC.csv"
+) %>%
+  select(
+    democ_index = OBS_VALUE,
+    year = TIME_PERIOD,
+    country = REF_AREA,
+    area = REF_AREA_LABEL
+  )
+# 4. GPD per capita, $B
+
+df_raw_gdp_pcap <- read.csv(
+  "https://data360files.worldbank.org/data360-data/data/WB_WDI/WB_WDI_NY_GDP_PCAP_CD.csv"
+) %>%
+  select(
+    gdp_pcap = OBS_VALUE,
+    year = TIME_PERIOD,
+    country = REF_AREA,
+    area = REF_AREA_LABEL
+  )
+# 5. Share of urban population
+df_raw_urban <- read.csv(
+  "https://data360files.worldbank.org/data360-data/data/WB_WDI/WB_WDI_SP_URB_TOTL_IN_ZS.csv"
+) %>%
+  select(
+    urban_pop = OBS_VALUE,
+    year = TIME_PERIOD,
+    country = REF_AREA,
+    area = REF_AREA_LABEL
+  )
+# 6. Share of female labor force
+
+df_raw_femlab <- read.csv(
+  "https://data360files.worldbank.org/data360-data/data/WB_WDI/WB_WDI_SL_TLF_TOTL_FE_ZS.csv"
+) %>%
+  select(
+    labour_fem = OBS_VALUE,
+    year = TIME_PERIOD,
+    country = REF_AREA,
+    area = REF_AREA_LABEL
+  )
+
+# 7. Life expectancy
+df_raw_letot <- read.csv(
+  "https://data360files.worldbank.org/data360-data/data/WB_WDI/WB_WDI_SP_DYN_LE00_IN.csv"
+) %>%
+  select(
+    life_exp = OBS_VALUE,
+    year = TIME_PERIOD,
+    country = REF_AREA,
+    area = REF_AREA_LABEL
+  )
+# Merging data =================================================
+
+df_parl_exp <- df_raw_parl %>%
+  left_join(
+    df_raw_exp %>% select(-area),
+    by = c("year", "country")
+  ) %>%
+  left_join(
+    df_raw_polit %>% select(-area),
+    by = c("year", "country")
+  ) %>%
+  left_join(
+    df_raw_urban %>% select(-area),
+    by = c("year", "country")
+  ) %>%
+  left_join(
+    df_raw_femlab %>% select(-area),
+    by = c("year", "country")
+  ) %>%
+  left_join(
+    df_raw_letot %>% select(-area),
+    by = c("year", "country")
+  ) %>%
+  left_join(
+    df_raw_gdp_pcap %>% select(-area),
+    by = c("year", "country")
+  ) %>%
+  mutate(
+    log_gdp_pcap = log(gdp_pcap)
+  )
+
+
+# Get list of countries only (excludes aggregates)
+countries_only <- WDI::WDI_data$country %>%
+  filter(region != "Aggregates") %>%
+  pull(iso3c)
+
+# Then filter your data
+df_panel <- df_parl_exp %>%
+  filter(country %in% countries_only) %>%
+  drop_na(
+    gdp_pcap,
+    life_exp,
+    women_prob,
+    health_exp,
+    democ_index,
+    urban_pop,
+  ) %>%
+  filter(year <= 2018)
+
+df_panel <- panel(unique(df_panel), ~ country + year)
+```
+
+\newpage
+
+# Introduction
+
+Public health outcomes are a critical policy concern worldwide. A substantial body of research demonstrates that government health spending significantly influences these outcomes [see @anwar2023government; @bokhari2007government; @boachie2020infant]. Understanding the determinants of government health expenditure decisions is therefore essential for improving population health and designing effective health policy.
+
+Among the many factors shaping government spending priorities, we focus on female descriptive representation in national legislatures. Gender representation in political institutions has gained increasing attention from scholars and policymakers alike, with many countries implementing reforms such as parliamentary quotas to enhance gender equality. Research suggests that female representation affects policy outcomes, particularly regarding public spending [@svaleryd2009women, @Mavisakalyan] and goods provision in education and health sectors [@clayton2018quota; @hessami2020female], the policy making on public health [@lippmann2019gender] as well as on health outcomes directly [@dutta2021share; @clots2011women]. On the other hand, others find no significant impact on policy spendings [@ferreira2014does; @hogstrom2025does]. Thus, the conditions under which female representation translates into specific policy outcomes and increased health expenditure in particular remain underexplored.
+
+This paper examines the relationship between women's representation in national parliaments and government health spending, with particular attention to how this relationship varies across levels of economic development. Using World Bank data spanning 2000 to 2018 and employing two-way fixed effects models, we find that women's parliamentary representation does not exhibit a significant unconditional effect on health expenditures. However, within country, we find weak evidence that higher levels of economic development moderate this relationship: when economic development increases, female representation has a positive and significant impact on health spending.
+
+These findings make three key contributions. First, they highlight that the policy influence of female legislators is conditional rather than uniform, depending critically on economic context. Second, they inform ongoing debates about political representation by demonstrating that promoting gender equality may have downstream effects on population health, particularly in more economically developed settings. Third, they contribute to the political economy literature by identifying conditions under which political institutions—specifically, gender representation—affect public expenditure decisions, thereby advancing our understanding of the determinants of fiscal policy and resource allocation across countries.
+
+# Women in National Legislatures and Health Expenditures
+
+This paper focuses on the impact of gender composition in national parliaments on public health expenditure allocation. Following the literature, we consider two general explanations for how female representation may translate into different spending patterns: women and men legislators prioritize distinct policy issues, with women emphasizing social and health issues, and the presence of women may improve institutional quality, thereby enhancing policy outcomes.
+
+First, research has shown that women's preferences are systematically different from men's preferences [@andreoni2001fair; @yao2018women] and that women demonstrate heightened sensitivity to social cues compared to men [@Croson]; these differences may translate into policy preferences. Women tend to place social welfare topics, including health, particularly maternal and child healthcare, higher on their priority lists than men [@gottlieb2018men; @gidengil2003women; @funk2015gender]. This pattern extends beyond health; prior studies on labor movements reveal that female policymakers have historically focused on policies addressing economic dependence and unemployment, often prioritizing social safety nets and workforce integration [@Creese]. We can therefore expect that women elected to parliament may prioritize these policies either through personal conviction or due to their desire to appeal to female constituents and voters who view such issues as important.
+
+@clayton2018quota suggest three stages where an increased number of women may impact budgetary decisions in parliament: at the budget proposal stage by increasing the likelihood of health issues being prioritized, during legislative review, and when voting on proposals. In fact, @Devlin find evidence for such effects in Rwanda in their qualitative study. Throughout all of these stages, an increased share of women is likely to shift collective decision-making outcomes to better reflect women legislators' preferences.
+
+Besides, @Goetz and @brollo2016happens have shown that female representation affects institutional quality, as women are less likely to engage in corrupt behaviors. This improved governance may enhance the effectiveness of policy implementation across all sectors, including healthcare, though our analysis focuses specifically on expenditure allocation rather than spending efficiency or outcomes.
+
+The mechanisms behind increased health spending could operate through both an increase in overall spending and a readjustment of budgetary priorities. Whether through raising absolute health spending or elevating health in the priority ordering when allocating a fixed budget, both mechanisms would result in an increased share of the budget devoted to health-related matters. In this paper, we do not differentiate between these mechanisms. Thus, we test the following hypothesis:
+
+> Hypothesis 1: Greater representation of women in national parliaments is associated with a higher proportion of health-related spending.
+
+However, we believe that the influence of women's representation is not universal and depends on the economic capacity of the state. We expect that this relationship holds mainly when governments have sufficient fiscal resources for discretionary allocation. For this reason, we suggest that the positive effect of female parliamentary representation on healthcare spending is stronger in wealthier countries with higher GDP per capita, where additional resources can be redistributed without significantly harming other sectors. Thus, our second hypothesis is:
+
+> Hypothesis 2: The positive association between women's representation in national parliaments and health-related spending is stronger in countries with higher levels of economic development.
+
+\newpage
+
+# Empirical Strategy
+
+## Data and Measurement
+
+To empirically evaluate our hypothesis, we rely on the data of the World Bank, which holds a major collection of political, social, and economic indicators for 161 countries. The time span of our analysis covers all available data from 2000 to 2018 across 161 countries, which leaves us with a panel dataset consisting of 2,868 observations. The panel is not balanced (@tbl-years), yet has a large number of states per each year. @tbl-descriptives-main contains the summary statistics for our main variables.
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| tbl-pos: "H"
+#| label: tbl-descriptives-main
+#| tbl-cap: "Descriptive Statistics for Key Variables of Interest"
+datasummary(
+  (`Seats held by women in parliament (%)` = women_prob) +
+    (`Health expeditures (% of total expenditures)` = health_exp) +
+    (`GDP per capita (thousands)` = gdp_pcap / 1000) ~ N +
+    Mean +
+    SD +
+    Min +
+    Median +
+    Max,
+  data = df_panel,
+)
+```
+
+### Dependent Variable
+
+As our dependent variable, we selected [*domestic general government health expenditure*](https://data360.worldbank.org/en/indicator/WB_WDI_SH_XPD_GHED_GE_ZS) indicator from World Bank. Expressed as a percentage of general government expenditure, this indicator directly reflects the priority given to healthcare within the overall framework of state expenditures. Higher values indicate that a greater share of government resources is allocated to health, suggesting both an increased importance attached to healthcare as a policy area and the outcome of political actors making a conscious choice to prioritize health spending over other budget items.
+
+```{r}
+#| label: fig-health
+#| fig-cap: "State Public Health Expenditure over Time"
+#| fig-width: 10
+#| fig-pos: "H"
+#| result: true
+#| warning: false
+#| echo: false
+df_panel_clean <- df_panel %>%
+  filter(!is.na(year), !is.na(health_exp))
+
+# 1. Country with high volatility, take second
+high_vol_country <- df_panel_clean %>%
+  group_by(area) %>%
+  summarise(
+    sd_health = sd(health_exp, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(sd_health)) %>%
+  slice(2) %>%
+  pull(area)
+
+highlight_countries <- c(
+  "United States",
+  "Germany",
+  "Japan",
+  "France",
+  "Brazil",
+  "Russian Federation",
+  high_vol_country
+) |>
+  unique()
+
+df_panel_lab <- df_panel_clean %>%
+  group_by(area) %>%
+  filter(n() > 1) %>% # keep only countries with >1 year
+  ungroup() %>%
+  mutate(label = if_else(area %in% highlight_countries, area, NA_character_))
+
+df_labels <- df_panel_lab %>%
+  filter(area %in% highlight_countries) %>%
+  group_by(area) %>%
+  filter(!is.na(year)) %>%
+  filter(year == max(year)) %>% # last available year for each area
+  ungroup()
+
+max_year <- max(df_panel_lab$year, na.rm = TRUE)
+min_year <- min(df_panel_lab$year, na.rm = TRUE)
+
+df_year_mean <- df_panel_lab |>
+  dplyr::group_by(year) |>
+  dplyr::summarise(
+    mean_health = mean(health_exp, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(df_panel_lab, aes(x = year, y = health_exp_lead1, group = area)) +
+  # average across all areas by year
+  geom_line(
+    data = df_year_mean,
+    aes(y = mean_health, group = 1, color = "Average"),
+    linewidth = 0.8,
+    alpha = 0.6
+  ) +
+  geom_line(
+    data = subset(df_panel_lab, area %in% highlight_countries),
+    aes(color = area),
+    linewidth = 0.8,
+    na.rm = TRUE
+  ) +
+  geom_point(
+    data = subset(df_panel_lab, area %in% highlight_countries),
+    aes(color = area),
+    size = 2,
+    na.rm = TRUE
+  ) +
+  scale_x_continuous(
+    limits = c(min_year, max_year),
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  labs(
+    x = "",
+    y = "Share of Total Expenditures",
+    color = ""
+  ) +
+  theme(
+    plot.margin = margin(t = 5, r = 10, b = 5, l = 5),
+    plot.title.position = "plot",
+    legend.position = "right"
+  )
+```
+
+In our entire dataset, on average health expenditures comprise about 9.68% of the total expenditures, with the median being 8.95%. The lowest observed value is 0.73%, with the largest comprising over one third of the total expenditures. @fig-health shows the average expenditures being about 10% and raising slightly over time. Besides, the plot highlights the expenditures for selected countries over time, which also hints at the presence of large variation across countries and also across time.
+
+### Key Independent Variables
+
+We operationalize women representation as the proportion of seats held by women in national parliaments (lower chamber if bicameral) (%). This is widely accepted measure of descriptive representation in the literature [@wangnerud2009women]. On average, women occupy 18.2% of seats in the national parliaments in the studied period, with variation ranging from 0 to 63.7%. @fig-women shows the distribution of shares across countries conditional on the year, and here we can spot the trend of the shares increasing with time: the median rises steadily from roughly 9.86% around 2000 to 21.3% by the 2018. Besides, the distribution shifts upward: the middle 50% of the data move up over time, indicating that not only the median but also lower‑ and higher‑representing countries are, on average, electing more women than before.
+
+```{r}
+#| label: fig-women
+#| fig-cap: "Distribution of Women's Parliamentary Representation by Year"
+#| fig-width: 10
+#| result: true
+#| warning: false
+#| echo: false
+df_panel %>%
+  ggplot(aes(x = year, y = women_prob)) +
+  geom_boxplot(aes(group = year)) +
+  labs(y = "Share", x = "") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1))
+```
+
+Another variable that we are interested in as a moderator is GDP per capita, which is a widely recognized measure of a state's economic development. In addition, higher economic development can be expected to promote both gender equality (for example, through greater access to education and more post-industrial values) and to increase the fiscal capacity for social spending. If we omit GDP per capita, we risk falsely attributing the effects of wealth to female representation. We also apply log-transformation to account for potential diminishing returns and to better capture non-linear relationships. @fig-loggdp shows the conditional distribution of the log-transformed variable.
+
+```{r}
+#| label: fig-loggdp
+#| fig-cap: "Distribution of GDP per Capita (logged) by Year"
+#| fig-width: 10
+#| result: true
+#| warning: false
+#| echo: false
+df_panel %>%
+  ggplot(aes(x = year, y = log_gdp_pcap)) +
+  geom_boxplot(aes(group = year)) +
+  labs(y = "(log) GDP per Capita", x = "")
+```
+
+### Control Variables
+
+To isolate the effect of female parliamentary representation on health spending, we control for key confounders to avoid omitted variable bias. Following the recommendations in @cinelli2024crash, we strive to include the variables that are precursors to both female representation and health expenditures in the causal chain and avoid those that, even though maybe related to both, are representing mechanisms or outcomes. We include the summary statistics table for these variables in the appendix in @tbl-descriptives-full. We thus prioritise the following factors:
+
+*Political Regime* (Democracy Index): Democracies tend to be more open to electing women and more attuned to public demands for social spending. If we do not account for regime type, we risk confusing the institutional characteristics of different systems with the direct effects of gender representation.
+
+*Urbanization* (% of urban population): Urban areas often foster more gender-egalitarian attitudes and provide greater political opportunities for women. Additionally, urban populations typically require more complex and costly healthcare systems, making urbanization an important control on the demand side of health expenditures.
+
+*Female Economic Integration* (% of female labor force): This reflects the extent of women’s participation in the formal economy, which is an underlying requirement for their political representation. Furthermore, it influences the financial base for social health insurance systems, thereby directly affecting the fiscal resources available for health spending.
+
+*Life expectance at birth* (in years): It presents a dual confounding risk. It correlates with an older population, whose traditional values may hinder women's political advancement, while also reflecting a legacy of high historical health spending. Omitting it could therefore attribute the effects of demographic attitudes or entrenched healthcare systems to female representation itself.
+
+Together, these controls account for the major economic, political, demographic, and social pathways that could otherwise spuriously explain a link between women in parliament and health budgets. In addition to these factors, we can expect unobservable country characteristics to serve as confounders, which is why besides these three factors we include country-level fixed effects. The same is true for the temporal patterns, and we account for that using year fixed effects.
+
+## Statistical Model and Inference
+
+Due to the nature of our dependent variable, we use ordinary least squares models with two-way fixed effects to measure the effect of female parliamentary representation and public health expenditures. This way, we control for both country-specific time-invariant characteristics and global temporal trends. We also include an interaction effect between our main independent variable and the GDP per capita to evaluate the conditional nature of the relationship as we hypothesized above.
+
+While we estimate the pooled model and assess its robustness by incorporating additional variables, the full model specification is as follows:
+
+\begin{center}
+
+$HealthExp_{it} = \beta_1 WomenParl_{it} + \beta_2 LogGDPpc_{it} + \theta_i + \delta_t + \varepsilon_{it}$,
+
+\end{center}
+
+where $\theta_i$ is country fixed effects, $\delta_t$ represents year fixed effects, and $\varepsilon_{it}$ is the error term.
+
+The full model for testing our second hypothesis would include an interaction effect, thus:
+
+$$HealthExp_{it} = \beta_1 WomenParl_{it} + \beta_2 LogGDPpc_{it} + \beta_3 WomenParl_{it} \times LogGDPpc_{it} + \theta_i + \delta_t + \varepsilon_{it},$$
+
+where $\theta_i$ is country fixed effects, $\delta_t$ represents year fixed effects, and $\varepsilon_{it}$ is the error term. $\beta_3$ would be the key difference to the previous model, where we would assume the effects of $WomenParl_{it}$ to be not conditional on economic development metric.
+
+Regarding inference, we tailor the standard-error specification to the structure of each model. For the pooled OLS specification, which does not include fixed effects, we report heteroskedasticity-robust standard errors to relax the assumption of homoskedastic errors while keeping the model as close as possible to a simple baseline. In all specifications that exploit the panel structure more fully (country fixed effects, year fixed effects, or two-way country–year fixed effects), we compute standard errors clustered at the country level. Country-clustered standard errors allow for arbitrary heteroskedasticity and serial correlation within countries over time, which is particularly important when identification relies on within-country variation in female representation and economic conditions.
+
+# Results
+
+The results of analysis are presented in @tbl-results. We start with exploring the unconditional effects of female representation on health expenditures with pooled OLS (model 1), include control variables (2), account for country and year heterogeneity separately (3 and 4 respectively), and fit a full model without the interaction in Model 5. Last in Model 6, we include the interaction effect to test if the effects are moderated by economic development, as our Hypothesis 2 suggests.
+
+We first consider the models with no interaction effect. Model 1 reveals a statistically significant positive coefficient for female representation ($\beta_1$ = 0.135, p \< 0.001). Introducing control variables more than halves the estimated effect ($\beta_1$ = 0.058, p \< 0.001). Including country fixed effects further reduces the coefficient ($\beta_1$ = 0.027, p \< 0.001), whereas the addition of year fixed effects alone does not have the same diminishing impact. In the two-way model, with both country and year fixed effects applied, the coefficient becomes statistically insignificant ($\beta_1$ = 0.007, p = 0.963).
+
+This comparison shows that the initial positive association observed in the simpler models is largely driven by persistent differences between countries, rather than indicating a causal relationship. Once we adequately control for both time-invariant country characteristics and temporal dynamics, the relationship between the share of women in parliament and government health expenditure is no longer statistically significant. Thus we don't find support for our Hypothesis 1 in the data.
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| label: tbl-results
+#| tbl-cap: "Effect of Women’s Parliamentary Representation on Health Expenditure"
+
+pooled <- feols(health_exp ~ women_prob, vcov = "hetero", data = df_panel)
+
+pooled_controls <- feols(
+  health_exp ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem,
+  vcov = ~country,
+  data = df_panel
+)
+
+ife <- feols(
+  health_exp ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    country,
+  vcov = ~country,
+  data = df_panel
+)
+
+tfe <- feols(
+  health_exp ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    year,
+  vcov = ~country,
+  data = df_panel
+)
+
+itfe <- feols(
+  health_exp ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    year + country,
+  vcov = ~country,
+  data = df_panel
+)
+
+itfe_inter <- feols(
+  health_exp ~ women_prob +
+    women_prob * log_gdp_pcap +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    year + country,
+  vcov = ~country,
+  data = df_panel
+)
+
+models1 <- list(pooled, pooled_controls, ife, tfe, itfe, itfe_inter)
+
+## --- labels ------------------------------------------------
+var_labs <- c(
+  "women_prob" = "Women in Parliament (%)",
+  "log_gdp_pcap" = "Log GDP per capita",
+  "urban_pop" = "Urban population (%)",
+  "democ_index" = "Democracy index",
+  "life_exp" = "Life expectancy (years)",
+  "labour_fem" = "Female labor force (%)",
+  "women_prob:log_gdp_pcap" = "Women × Log GDP per capita",
+  "(Intercept)" = "Constant"
+)
+
+# R² and within-R² in GOF rows
+gof_labs <- tribble(
+  ~raw               , ~clean         , ~fmt ,
+  "nobs"             , "Observations" ,    0 ,
+  "r.squared"        , "R2"           ,    3 ,
+  "within.r.squared" , "Within R2"    ,    3
+)
+
+# FE rows + SE type (columns must be "1".."6")
+fe_rows <- tribble(
+  ~term        , ~`1`        , ~`2`       , ~`3`       , ~`4`       , ~`5`       , ~`6`       ,
+  "Country FE" , "No"        , "No"       , "Yes"      , "No"       , "Yes"      , "Yes"      ,
+  "Year FE"    , "No"        , "No"       , "No"       , "Yes"      , "Yes"      , "Yes"      ,
+  "SE type"    , "Het.-rob." , "by state" , "by state" , "by state" , "by state" , "by state"
+)
+
+within_vals <- sapply(models1, function(m) {
+  g <- glance(m)
+  if ("within.r.squared" %in% names(g)) g$within.r.squared else NA_real_
+})
+
+within_row <- tibble(
+  term = "Within R²",
+  `1` = "",
+  `2` = "",
+  `3` = round(within_vals[3], 3),
+  `4` = round(within_vals[4], 3),
+  `5` = round(within_vals[5], 3),
+  `6` = round(within_vals[6], 3)
+)
+
+# bind Within R² above FE rows (order as you like)
+extra_rows <- rbind(within_row, fe_rows)
+
+## --- LaTeX table -------------------------------------------
+modelsummary(
+  models = models1,
+  coef_map = var_labs,
+  stars = c("*" = 0.10, "**" = 0.05, "***" = 0.01),
+  statistic = "({std.error})", # shows SEs in parentheses
+  gof_map = gof_labs,
+  fmt = 3,
+  #add_rows = fe_rows,
+  add_rows = extra_rows,
+  output = "latex"
+)
+
+```
+
+This result highlights the importance of including both country and time fixed effects when working with panel data. Country fixed effects control for stable, long-term differences across countries—such as institutional, political, and historical factors—ensuring that estimated effects reflect only within-country changes over time as the differences in the reported $R^2$ and $within-R^2$ show. Variance decomposition (in @tbl-panel-summary) further illustrates this point: in our data, the proportion of women in parliament and health expenditures exhibit much higher between-country variation (9.8 and 4.45 respectively) than within-country variation (5.38 and 1.66 respectively). This pattern is consistent with the gradual, path-dependent evolution of both parliamentary and fiscal structures. As a result, including both country and year fixed effects narrows the analysis to relatively modest year-to-year shifts within countries, naturally reducing the estimated coefficients and their statistical significance.
+
+The previous models, however, assumed a homogeneous effect of female representation on health spending. Our hypothesis is best evaluated by allowing the effect of female representation to vary across the values of (log) GDP. However, in the model with the interaction, we should not interpret the constitutive terms as unconditional effects [@brambor2006understanding] and we thus would rely on the computed marginal effects for the interpretation later.
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| label: fig-me
+#| fig-cap: "Marginal Effect of Female Representation on Health Expenditures"
+#| fig-width: 10
+# Контроль уровня доверия
+slopes_df_90 <- slopes(
+  itfe_inter,
+  variables = "women_prob",
+  conf.level = 0.90, # 90% доверительный интервал
+  newdata = datagrid(
+    log_gdp_pcap = quantile(
+      df_panel$log_gdp_pcap,
+      probs = seq(0.1, 0.95, 0.01),
+      na.rm = TRUE
+    )
+  )
+)
+
+slopes_df_95 <- slopes(
+  itfe_inter,
+  variables = "women_prob",
+  conf.level = 0.95, # 95% (по умолчанию)
+  newdata = datagrid(
+    log_gdp_pcap = quantile(
+      df_panel$log_gdp_pcap,
+      probs = seq(0.1, 0.95, 0.01),
+      na.rm = TRUE
+    )
+  ),
+)
+
+
+ggplot() +
+  geom_rug(
+    data = df_panel %>% filter(gdp_pcap < quantile(gdp_pcap, 0.95, na.rm = T)),
+    aes(x = gdp_pcap),
+    sides = "b",
+    color = "gray40",
+    alpha = 0.3,
+    length = unit(0.03, "npc"),
+    inherit.aes = FALSE
+  ) +
+  geom_ribbon(
+    data = slopes_df_95,
+    aes(x = exp(log_gdp_pcap), ymin = conf.low, ymax = conf.high),
+    fill = "steelblue",
+    alpha = 0.3
+  ) +
+  geom_ribbon(
+    data = slopes_df_90,
+    aes(x = exp(log_gdp_pcap), ymin = conf.low, ymax = conf.high),
+    fill = "darkblue",
+    alpha = 0.3
+  ) +
+  geom_line(
+    data = slopes_df_95,
+    aes(x = exp(log_gdp_pcap), y = estimate),
+    color = "darkblue",
+    size = 1.2
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  scale_x_continuous(labels = dollar_format(scale = 0.001, suffix = "K")) +
+  labs(
+    #title = "Marginal Effects with Different Confidence Levels",
+    subtitle = "Blue: 95% CI | Dark blue: 90% CI",
+    x = "GDP per capita",
+    y = "Marginal Effect"
+  )
+```
+
+To facilitate the interpretation, we plot the marginal effects over a GDP per capita (while the model has used the logged version of the variable, hence the non-linearity) in @fig-me. For the sake of clarity, we plot the effects over the deciles of the GDP variable, covering 95% of the distribution for better visibility despite outliers. The marginal effects plot demonstrates that for the smaller values of GDP per capita, we still observe no significant impact of female representation on our dependent variable (as the 95% confidence intervals include zero). However, once the GDP per capita is higher than $18'000$ USD per capita, the effect of female representation tends to be positive with 90% confidence.
+
+In the range of GDP per capita where the confidence intervals no longer include zero with 90% confidence, the estimated effect is modest but substantively meaningful. For middle‑income countries (around 15,000–20,000 USD per capita), a 1‑percentage‑point increase in women’s share in parliament is associated with roughly a 0.03–0.05‑point increase in public health expenditure shares. At higher income levels, the effect grows: in richer countries e.g. when the GDP per capita increases to 45'000 USD per capita, a 10‑percentage‑point rise in women’s parliamentary representation is associated with an average increase in health spending on the order of 0.6 percentage points.
+
+This pattern aligns with the idea that institutional capacity and fiscal space may condition the ability of female legislators to influence budgetary priorities. In countries with higher GDP per capita, women’s representation may translate more readily into expanded social spending, while in poorer countries structural constraints may limit the policy impact of increased female participation. This finding thus partially supports our Hypothesis 2 regarding the conditional nature of the relationship between female descriptive representation and health expenditures, although only at the 0.1 significance level.
+
+# Discussion and Limitations
+
+While our design and empirical strategy have ruled out some important confounders, several limitations warrant a discussion.
+
+*Political and Institutional Factors.* Due to data limitations, our analysis does not account for potentially relevant political factors, such as government ideology, party composition, or institutional mechanisms designed to promote gender equality. The presence of legislative quotas for women represents a particularly important omitted variable: quota systems simultaneously influence female representation levels and may signal broader institutional commitments to social spending that affect health expenditure allocations independently of representation itself. Moreover, it is important to recognize that our theoretical framework is largely derived from research on OECD democracies. Ths may not fully capture mechanisms in non-Western contexts where women's political representation is shaped by other historical trajectories, including colonial legacies, conflict histories, or informal power networks, creating effect heterogeneity our model doesn't capture with fixed effects.
+
+*Causal Identification.* While our fixed effects approach controls for time-invariant country characteristics and global trends, we cannot definitively establish causality. Reverse causality presents a particular concern, as @Detraz_Peksen_2018 demonstrate that social welfare policies affect women's political participation, suggesting potential bidirectional relationships. Additionally, unobserved time-varying factors correlated with both female representation and spending priorities could bias our estimates. Similarly, our modelling approach assumes that the effects are simultaneous, i.e. that parliamentary representation in year $t$ has an impact on spendings in the same year, which raises concernes about reverse causality. We replicate the results using lagged version of the independent variables in @tbl-lagged-results, and our results hold and the interactions become significant at 95% level for countries with high GDP per capita (@fig-me-lead), but more advanced modelling techniques would allow us to provide a better answer.
+
+*Measurement Limitations.* Three measurement issues we discuss below may act the interpretation of our results. First, our measure of descriptive representation, the percentage of parliamentary seats held by women, does not necessarily reflect substantive representation or the actual influence women wield in budgetary processes. Women's ability to affect spending decisions depends on factors our analysis does not observe, such as committee assignments, leadership positions, party cohesion, and coalition dynamics. Consequently, even in countries with identical shares of female legislators there may exist very different levels of women's actual policy influence.
+
+Second, we examine health expenditure shares rather than absolute levels, which means we cannot distinguish whether observed changes result from increased absolute spending, reallocation from other sectors, or both. Moreover, our expenditure-based measure cannot address whether female representation influences the effectiveness or efficiency of health resource allocation. A null finding might reflect scenarios where countries have reached optimal health spending levels that remain unresponsive to parliamentary composition changes, which is a question future research should explore.
+
+Third, our selection of the moderator variable, GDP per capita, to proxy fiscal capacity may be imperfect and not fully capture the budgetary constraints or other relevant factors that shape governments' discretionary spending ability.
+
+*Modeling Assumptions.* Our approach assumes linear relationships between variables of interest and a linear moderating effect of (log) GDP per capita. Relaxing these functional form assumptions represents an avenue for future research.
+
+*Temporal and Geographic Scope*. Our analysis spans 2000 to 2018, capturing short- to medium-term effects but potentially missing longer-term institutional changes that female representation may catalyze over decades. Additionally, we focus on national-level parliamentary representation, though many health expenditure decisions occur at subnational levels, which is a dynamics that is not reflected in our analysis.
+
+Despite these limitations, our findings provide important evidence on the conditional nature of female representation's policy influence and contribute to understanding the political economy of health expenditure allocation.
+
+# Conclusion
+
+This paper examined whether having better representation of women in the national parliament leads to higher government health spending, and whether this relationship depends on economic development. Using panel data from 161 countries between 2000 and 2018, we found that the answer is rather nuanced and not the effects are not uniform. In fact, we don't find support for the first hypothesis about the homogeneous effect of the female representation. Simple models show a positive correlation, but once we account for stable country differences and time trends using fixed effects models, this relationship disappears.
+
+Still, we find modest support for the claim that this effect depends on the economic development. In cases when GDP per capita was above approximately \$18,000, increased women's representation is associated with higher health spending. In poorer countries, we see no such effect. This is in line with our expectation that wealthier governments have more budgetary flexibility, which may enable female legislators to successfully influence spending priorities toward healthcare.
+
+These findings have important implications. First, they show that the policy impact of women's representation is conditional and not uniform. Second, they suggest that economic context matters, as gender diversity in parliaments is more likely to shift spending patterns where fiscal capacity exists. Third, they highlight methodological concerns: cross-country comparisons can be misleading without proper controls for country-specific factors.
+
+We acknowledge several limitations of our study. Our analysis cannot definitively establish causality, and our measure of representation (seat shares) doesn't capture women's actual influence in decision-making. We also examine spending shares rather than absolute levels, and our timeframe may miss longer-term institutional changes.
+
+Despite these limitations, this study contributes to understanding when and how political representation translates into policy outcomes. It demonstrates that promoting gender equality in legislatures can influence social spending, but primarily where economic resources and institutional capacity support such changes. Future research should explore additional moderating factors and the mechanisms linking representation to policy change.
+
+\newpage
+
+# References
+
+::: {#refs}
+:::
+
+\newpage
+
+# Team Contribution
+
+-   **Altysheva Zhanna:** conceptualization, literature review, research design, data collection & data preprocessing, regression analysis, draft data and measurement, draft results, project management, presentation
+-   **Emshanova Evgeniia:** conceptualization, research design, draft introduction, draft data and measurement
+-   **Obukhova Ekaterina:** conceptualization, literature review, research design, data preprocessing, visualization, discussion and limitations, draft theory, draft discussion and limitations, presentation
+-   **Semenova Kseniia:** conceptualization, literature review, research design, regression analysis, draft theory, draft statistical model, draft results, draft conclusion, visualization, full draft revision and editing, project management, presentation
+-   **Fradkina Tatiana:** conceptualization, research design, data preprocessing, visualization, draft data and measurement
+
+# Declaration of Use of Generative Artificial Intelligence
+
+The report was developed using a generative artificial intelligence (AI) tool Claude 4.5 Sonnet by Anthropic to obtain feedback on text clarity, flow and coherence.
+
+\newpage
+
+# Appendix 1: Tables
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| label: tbl-years
+#| tbl-cap: "Panel Data: Temporal Frequency"
+#| tbl-pos: "H"
+
+knitr::kable(t(table(df_panel$year)))
+```
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| label: tbl-descriptives-full
+#| tbl-cap: "Descriptive Statistics for All Variables"
+#| tbl-pos: "H"
+datasummary(
+  #|
+  (`Seats held by women in parliament (%)` = women_prob) +
+    (`Health expeditures (% of total expenditures)` = health_exp) +
+    (`GDP per capita` = gdp_pcap) +
+    (`Democracy Index` = democ_index) +
+    (`Urban population (%)` = urban_pop) +
+    (`Life expectance` = life_exp) +
+    (`Women in labour force (%)` = labour_fem) ~ Mean + SD + Min + Max,
+  data = df_panel
+)
+```
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| label: tbl-panel-summary
+#| tbl-cap: "Panel Summary Statistics: Within and Between Country Variation"
+#| tbl-pos: "H"
+
+xtsum(
+  df_panel,
+  c("women_prob", "health_exp", "gdp_pcap"),
+  id = "country",
+  t = "year",
+  na.rm = TRUE,
+  dec = 2
+)
+```
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| label: tbl-lagged-results
+#| tbl-cap: "Regresstion Results for Models with Lagged Independent Variables"
+#| tbl-pos: "H"
+
+pooled <- feols(health_exp_lead1 ~ women_prob, vcov = "hetero", data = df_panel)
+
+pooled_controls <- feols(
+  health_exp_lead1 ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem,
+  vcov = ~country,
+  data = df_panel
+)
+
+ife <- feols(
+  health_exp_lead1 ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    country,
+  vcov = ~country,
+  data = df_panel
+)
+
+tfe <- feols(
+  health_exp_lead1 ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    year,
+  vcov = ~country,
+  data = df_panel
+)
+
+itfe <- feols(
+  health_exp_lead1 ~ women_prob +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    year + country,
+  vcov = ~country,
+  data = df_panel
+)
+
+itfe_inter <- feols(
+  health_exp_lead1 ~ women_prob +
+    women_prob * log_gdp_pcap +
+    log_gdp_pcap +
+    urban_pop +
+    democ_index +
+    life_exp +
+    labour_fem |
+    year + country,
+  vcov = ~country,
+  data = df_panel
+)
+
+models1 <- list(pooled, pooled_controls, ife, tfe, itfe, itfe_inter)
+
+## --- labels ------------------------------------------------
+var_labs <- c(
+  "women_prob" = "Women in Parliament (%)",
+  "log_gdp_pcap" = "Log GDP per capita",
+  "urban_pop" = "Urban population (%)",
+  "democ_index" = "Democracy index",
+  "life_exp" = "Life expectancy (years)",
+  "labour_fem" = "Female labor force (%)",
+  "women_prob:log_gdp_pcap" = "Women × Log GDP per capita",
+  "(Intercept)" = "Constant"
+)
+
+# R² and within-R² in GOF rows
+gof_labs <- tribble(
+  ~raw               , ~clean         , ~fmt ,
+  "nobs"             , "Observations" ,    0 ,
+  "r.squared"        , "R"            ,    3 ,
+  "within.r.squared" , "Within R2"    ,    3
+)
+
+# FE rows + SE type (columns must be "1".."6")
+fe_rows <- tribble(
+  ~term        , ~`1`        , ~`2`       , ~`3`       , ~`4`       , ~`5`       , ~`6`       ,
+  "Country FE" , "No"        , "No"       , "Yes"      , "No"       , "Yes"      , "Yes"      ,
+  "Year FE"    , "No"        , "No"       , "No"       , "Yes"      , "Yes"      , "Yes"      ,
+  "SE type"    , "Het.-rob." , "by state" , "by state" , "by state" , "by state" , "by state"
+)
+
+within_vals <- sapply(models1, function(m) {
+  g <- glance(m)
+  if ("within.r.squared" %in% names(g)) g$within.r.squared else NA_real_
+})
+
+within_row <- tibble(
+  term = "Within R²",
+  `1` = "",
+  `2` = "",
+  `3` = round(within_vals[3], 3),
+  `4` = round(within_vals[4], 3),
+  `5` = round(within_vals[5], 3),
+  `6` = round(within_vals[6], 3)
+)
+
+# bind Within R² above FE rows (order as you like)
+extra_rows <- rbind(within_row, fe_rows)
+
+## --- LaTeX table -------------------------------------------
+modelsummary(
+  models = models1, # <-- IMPORTANT
+  coef_map = var_labs,
+  stars = c("*" = 0.10, "**" = 0.05, "***" = 0.01),
+  statistic = "({std.error})", # shows SEs in parentheses
+  gof_map = gof_labs,
+  fmt = 3,
+  #add_rows = fe_rows,
+  add_rows = extra_rows,
+  output = "latex"
+)
+```
+
+```{r}
+#| result: true
+#| warning: false
+#| echo: false
+#| label: fig-me-lead
+#| fig-cap: "Marginal Effect of Female Representation on Health Expenditures (Lagged IVs)"
+#| fig-width: 10
+#| tbl-pos: "H"
+slopes_df_90 <- slopes(
+  itfe_inter,
+  variables = "women_prob",
+  conf.level = 0.90, # 90% доверительный интервал
+  newdata = datagrid(
+    log_gdp_pcap = quantile(
+      df_panel$log_gdp_pcap,
+      probs = seq(0.1, 0.95, 0.01),
+      na.rm = TRUE
+    )
+  )
+)
+
+slopes_df_95 <- slopes(
+  itfe_inter,
+  variables = "women_prob",
+  conf.level = 0.95, # 95% (по умолчанию)
+  newdata = datagrid(
+    log_gdp_pcap = quantile(
+      df_panel$log_gdp_pcap,
+      probs = seq(0.1, 0.95, 0.01),
+      na.rm = TRUE
+    )
+  ),
+)
+
+
+ggplot() +
+  geom_rug(
+    data = df_panel %>% filter(gdp_pcap < quantile(gdp_pcap, 0.95, na.rm = T)),
+    aes(x = gdp_pcap),
+    sides = "b",
+    color = "gray40",
+    alpha = 0.3,
+    length = unit(0.03, "npc"),
+    inherit.aes = FALSE
+  ) +
+  geom_ribbon(
+    data = slopes_df_95,
+    aes(x = exp(log_gdp_pcap), ymin = conf.low, ymax = conf.high),
+    fill = "steelblue",
+    alpha = 0.3
+  ) +
+  geom_ribbon(
+    data = slopes_df_90,
+    aes(x = exp(log_gdp_pcap), ymin = conf.low, ymax = conf.high),
+    fill = "darkblue",
+    alpha = 0.3
+  ) +
+  geom_line(
+    data = slopes_df_95,
+    aes(x = exp(log_gdp_pcap), y = estimate),
+    color = "darkblue",
+    size = 1.2
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  scale_x_continuous(labels = dollar_format(scale = 0.001, suffix = "K")) +
+  labs(
+    #title = "Marginal Effects with Different Confidence Levels",
+    subtitle = "Blue: 95% CI | Dark blue: 90% CI",
+    x = "GDP per capita",
+    y = "Marginal Effect"
+  )
+```
+
+\newpage
+
+# Appendix 2: Code Script
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
